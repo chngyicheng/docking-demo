@@ -10,6 +10,7 @@ DockingNode::DockingNode() : Node("docking_node") {
     this->declare_parameter("final_approach_distance", 0.2);
     this->declare_parameter("docking_distance_threshold", 0.05);
     this->declare_parameter("docking_angle_threshold", 0.05);
+    this->declare_parameter("enable_pose_noise", false);
 
     target_x_ = this->get_parameter("target_x").as_double();
     target_y_ = this->get_parameter("target_y").as_double();
@@ -18,13 +19,14 @@ DockingNode::DockingNode() : Node("docking_node") {
     final_approach_distance_ = this->get_parameter("final_approach_distance").as_double();
     docking_distance_threshold_ = this->get_parameter("docking_distance_threshold").as_double();
     docking_angle_threshold_ = this->get_parameter("docking_angle_threshold").as_double();
+    enable_pose_noise_ = this->get_parameter("enable_pose_noise").as_bool();
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     // Subscribers
     scan_sub_ = this->create_subscription<sensor_msgs::msg::LaserScan>(
-      "/scan", 10, std::bind(&DockingNode::scanCallback, this, std::placeholders::_1));
+      "/scan_disturbed", 10, std::bind(&DockingNode::scanCallback, this, std::placeholders::_1));
 
     // Publishers
     cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
@@ -37,6 +39,7 @@ DockingNode::DockingNode() : Node("docking_node") {
     RCLCPP_INFO(this->get_logger(), "Docking node initialized");
     RCLCPP_INFO(this->get_logger(), "Target: (%.2f, %.2f, %.2f rad)", target_x_, target_y_, target_theta_);
     RCLCPP_INFO(this->get_logger(), "Approach threshold: %.2f m", approach_distance_threshold_);
+    RCLCPP_INFO(this->get_logger(), "Pose noise: %s", enable_pose_noise_ ? "ENABLED" : "disabled");
 
 }
 
@@ -227,6 +230,25 @@ std::optional<geometry_msgs::msg::Pose> DockingNode::getRobotPose() {
         pose.position.z = transform.transform.translation.z;
         pose.orientation = transform.transform.rotation;
 
+        // Inject pose noise to force reliance on LiDAR geometry
+        if (enable_pose_noise_) {
+            pose.position.x += pos_noise_dist_(noise_gen_);
+            pose.position.y += pos_noise_dist_(noise_gen_);
+
+            double siny = 2.0 * (pose.orientation.w * pose.orientation.z +
+                                  pose.orientation.x * pose.orientation.y);
+            double cosy = 1.0 - 2.0 * (pose.orientation.y * pose.orientation.y +
+                                        pose.orientation.z * pose.orientation.z);
+            double yaw = std::atan2(siny, cosy) + yaw_noise_dist_(noise_gen_);
+
+            tf2::Quaternion q;
+            q.setRPY(0.0, 0.0, yaw);
+            pose.orientation.x = q.x();
+            pose.orientation.y = q.y();
+            pose.orientation.z = q.z();
+            pose.orientation.w = q.w();
+        }
+
         return pose;
     } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Could not get robot pose: %s", ex.what());
@@ -374,10 +396,10 @@ double DockingNode::normalizeAngle(double angle) {
 
 double DockingNode::getRobotYaw(const geometry_msgs::msg::Pose& pose) {
     // Convert quaternion to yaw
-    double siny_cosp = 2.0 * (pose.orientation.w * pose.orientation.z + 
+    double siny_cosp = 2.0 * (pose.orientation.w * pose.orientation.z +
                               pose.orientation.x * pose.orientation.y);
-    double cosy_cosp = 1.0 - 2.0 * (pose.orientation.y * pose.orientation.y + 
-                                     pose.orientation.z * pose.orientation.z);
+    double cosy_cosp = 1.0 - 2.0 * (pose.orientation.y * pose.orientation.y +
+                                    pose.orientation.z * pose.orientation.z);
     return std::atan2(siny_cosp, cosy_cosp);
 }
 

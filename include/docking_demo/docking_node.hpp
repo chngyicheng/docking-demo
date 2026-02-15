@@ -86,6 +86,12 @@ private:
     double distance_tolerance_ = 0.07;  // 10cm
     double angle_tolerance_ = 0.1;     // ~6 degrees
     double approach_orientation_tolerance_ = 0.34;
+
+    // Pose noise injection (applied in getRobotPose)
+    bool enable_pose_noise_ = false;
+    std::mt19937 noise_gen_{std::random_device{}()};
+    std::normal_distribution<double> pos_noise_dist_{0.0, 0.1};    // ±10cm
+    std::normal_distribution<double> yaw_noise_dist_{0.0, 0.087};  // ±5°
 };
 
 }  // namespace docking_demo

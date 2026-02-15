@@ -40,13 +40,18 @@ ament_target_dependencies(docking_node
   Eigen3
 )
 
-# add_executable(disturbance_node src/disturbance_node.cpp)
-# ament_target_dependencies(disturbance_node
-#   rclcpp sensor_msgs geometry_msgs nav_msgs std_msgs
-# )
+add_executable(disturbance_node 
+    src/disturbance_main.cpp
+    src/disturbance_node.cpp
+)
+ament_target_dependencies(disturbance_node
+  rclcpp
+  sensor_msgs
+  std_msgs
+)
 
 # Install
-install(TARGETS docking_node #disturbance_node
+install(TARGETS docking_node disturbance_node
   DESTINATION lib/${PROJECT_NAME})
 
 install(DIRECTORY launch config
