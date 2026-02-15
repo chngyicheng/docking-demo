@@ -1,0 +1,8 @@
+docking_node:
+  ros__parameters:
+    target_x: 3.8
+    target_y: 0.0
+    target_theta: 0.0
+    approach_distance_threshold: 1.0
+    docking_distance_threshold: 0.05
+    docking_angle_threshold: 0.05
