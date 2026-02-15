@@ -1,8 +1,9 @@
 docking_node:
   ros__parameters:
-    target_x: 3.8
-    target_y: 0.0
-    target_theta: 0.0
+    target_x: 2.0  # 3.7 # Top right wall in turtlebot3 world
+    target_y: -1.5 #-0.5
+    target_theta: -1.57 #-0.64
     approach_distance_threshold: 1.0
+    final_approach_distance: 0.2
     docking_distance_threshold: 0.05
     docking_angle_threshold: 0.05
