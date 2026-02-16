@@ -31,8 +31,10 @@ Tested under scan dropout and scan corruption disturbances.
 
 ```bash
 # ROS2 Humble + TurtleBot3 + Nav2
-sudo apt install ros-humble-desktop ros-humble-turtlebot3* ros-humble-navigation2
+sudo apt install ros-humble-desktop ros-humble-navigation2 ros-humble-nav2-bringup
 
+# TurtleBot3 packages
+sudo apt install ros-humble-turtlebot3* ros-humble-turtlebot3-msgs
 export TURTLEBOT3_MODEL=burger
 ```
 
@@ -40,15 +42,18 @@ export TURTLEBOT3_MODEL=burger
 
 ```bash
 cd ~/<your_ros2_ws>/src
-git clone <repo-url> docking_demo
-cd ~/ros2_ws
-colcon build --packages-select docking_demo
+git clone https://github.com/chngyicheng/docking-demo.git
+git clone -b humble https://github.com/ROBOTIS-GIT/turtlebot3_simulations.git
+cd ~/<your_ros2_ws>
+colcon build --symlink-install
 source install/setup.bash
 ```
 
 ## Running the Demo
 
 ### Step 1: Launch Simulation + Navigation
+
+> **Note**: Update the path to your workspace in the scripts before launching.
 
 ```bash
 ./docking_demo/scripts/startup_turtlebot.sh
@@ -152,7 +157,7 @@ docking_demo/
 - **No retry logic**: If docking enters FAILED, the node must be restarted. There is no automatic recovery or re-approach.
 - **Hardcoded control gains**: Gains are not exposed as ROS parameters — tuning requires recompilation.
 - **No lateral alignment**: The controller aligns perpendicular distance and heading to the wall, but does not correct lateral offset along the wall.
-- **LiDAR minimum range**: TurtleBot3 LDS-01 has ~5.9cm minimum range, limiting how close the robot can reliably sense the wall. `d_target` is set to 0.1m to stay above this.
+- **LiDAR minimum range**: TurtleBot3 LDS-01 has ~12cm minimum range, limiting how close the robot can reliably sense the wall. `d_target` is set to 0.1m to stay above this.
 
 ## Troubleshooting
 
