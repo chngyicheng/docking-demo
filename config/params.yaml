@@ -7,4 +7,5 @@ docking_node:
     final_approach_distance: 0.2
     docking_distance_threshold: 0.05
     docking_angle_threshold: 0.05
+    docking_timeout: 30.0
 

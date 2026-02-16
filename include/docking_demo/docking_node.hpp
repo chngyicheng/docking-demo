@@ -105,7 +105,7 @@ private:
     rclcpp::Time docking_start_time_;
     int consecutive_wall_failures_ = 0;
     int max_consecutive_failures_ = 25;
-    double docking_timeout_s_ = 30.0;
+    double docking_timeout_s_ = 15.0;
 
     // Pose noise injection (applied in getRobotPose)
     bool enable_pose_noise_ = false;

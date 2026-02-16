@@ -10,6 +10,7 @@ DockingNode::DockingNode() : Node("docking_node") {
     this->declare_parameter("final_approach_distance", 0.2);
     this->declare_parameter("docking_distance_threshold", 0.05);
     this->declare_parameter("docking_angle_threshold", 0.05);
+    this->declare_parameter("docking_timeout", 30.0);
 
     target_x_                      = this->get_parameter("target_x").as_double();
     target_y_                      = this->get_parameter("target_y").as_double();
@@ -18,6 +19,7 @@ DockingNode::DockingNode() : Node("docking_node") {
     final_approach_distance_       = this->get_parameter("final_approach_distance").as_double();
     docking_distance_threshold_m_  = this->get_parameter("docking_distance_threshold").as_double();
     docking_angle_threshold_rad_   = this->get_parameter("docking_angle_threshold").as_double();
+    docking_timeout_s_             = this->get_parameter("docking_timeout").as_double();
 
     tf_buffer_   = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
