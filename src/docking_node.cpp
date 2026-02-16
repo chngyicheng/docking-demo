@@ -10,18 +10,16 @@ DockingNode::DockingNode() : Node("docking_node") {
     this->declare_parameter("final_approach_distance", 0.2);
     this->declare_parameter("docking_distance_threshold", 0.05);
     this->declare_parameter("docking_angle_threshold", 0.05);
-    this->declare_parameter("enable_pose_noise", false);
 
-    target_x_ = this->get_parameter("target_x").as_double();
-    target_y_ = this->get_parameter("target_y").as_double();
-    target_theta_ = this->get_parameter("target_theta").as_double();
-    approach_distance_threshold_ = this->get_parameter("approach_distance_threshold").as_double();
-    final_approach_distance_ = this->get_parameter("final_approach_distance").as_double();
-    docking_distance_threshold_ = this->get_parameter("docking_distance_threshold").as_double();
-    docking_angle_threshold_ = this->get_parameter("docking_angle_threshold").as_double();
-    enable_pose_noise_ = this->get_parameter("enable_pose_noise").as_bool();
+    target_x_                      = this->get_parameter("target_x").as_double();
+    target_y_                      = this->get_parameter("target_y").as_double();
+    target_theta_                  = this->get_parameter("target_theta").as_double();
+    approach_distance_threshold_m_ = this->get_parameter("approach_distance_threshold").as_double();
+    final_approach_distance_       = this->get_parameter("final_approach_distance").as_double();
+    docking_distance_threshold_m_  = this->get_parameter("docking_distance_threshold").as_double();
+    docking_angle_threshold_rad_   = this->get_parameter("docking_angle_threshold").as_double();
 
-    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_buffer_   = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     // Subscribers
@@ -30,7 +28,7 @@ DockingNode::DockingNode() : Node("docking_node") {
 
     // Publishers
     cmd_vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
-    goal_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("/goal_pose", 10);
+    goal_pub_    = this->create_publisher<geometry_msgs::msg::PoseStamped>("/goal_pose", 10);
 
     control_timer_ = this->create_wall_timer(
         std::chrono::milliseconds(20),
@@ -38,8 +36,7 @@ DockingNode::DockingNode() : Node("docking_node") {
 
     RCLCPP_INFO(this->get_logger(), "Docking node initialized");
     RCLCPP_INFO(this->get_logger(), "Target: (%.2f, %.2f, %.2f rad)", target_x_, target_y_, target_theta_);
-    RCLCPP_INFO(this->get_logger(), "Approach threshold: %.2f m", approach_distance_threshold_);
-    RCLCPP_INFO(this->get_logger(), "Pose noise: %s", enable_pose_noise_ ? "ENABLED" : "disabled");
+    RCLCPP_INFO(this->get_logger(), "Approach threshold: %.2f m", approach_distance_threshold_m_);
 
 }
 
@@ -68,154 +65,231 @@ void DockingNode::sendNavigationGoal() {
 
     goal_pub_->publish(goal_msg);
     RCLCPP_INFO(this->get_logger(),
-        "Sent Nav2 goal: position (%.2f, %.2f), orientation %.2f rad (%.1f°)",
-        target_x_, target_y_, target_theta_, target_theta_ * 180.0 / M_PI);
+                "Sent Nav2 goal: position (%.2f, %.2f), orientation %.2f rad (%.1f°)",
+                target_x_, target_y_, target_theta_, target_theta_ * 180.0 / M_PI);
 }
 
 void DockingNode::controlLoop() {
     auto pose_opt = getRobotPose();
     if (!pose_opt.has_value()) {
+        auto empty_pose = geometry_msgs::msg::Pose();
+        current_pose_ = empty_pose;
         return;
     }
 
-    geometry_msgs::msg::Pose current_pose = pose_opt.value();
-    double distance = getDistanceToTarget(current_pose);
-
     // State machine
     switch (docking_state_) {
-        case DockingState::IDLE: {
-             if (!goal_sent_) {
+        case DockingState::IDLE:
+            current_pose_ = pose_opt.value();
+            distance_to_target_ = getDistanceToTarget(current_pose_);
+            stopped_ = false;
+
+            if (!goal_sent_  || (this->now() - last_goal_time_).seconds() > 5.0) {
                 sendNavigationGoal();
                 goal_sent_ = true;
+                last_goal_time_ = this->now();
                 RCLCPP_INFO(this->get_logger(), "Waiting for Nav2 to reach docking vicinity...");
             }
-            double current_yaw = getRobotYaw(current_pose);
-            double yaw_error = std::abs(normalizeAngle(current_yaw - target_theta_));
-
-            bool close_enough = (distance < approach_distance_threshold_);
-            bool oriented_correctly = (yaw_error < approach_orientation_tolerance_);
-
-            if (close_enough && oriented_correctly) {
-                RCLCPP_INFO(this->get_logger(),
-                    "Ready to dock - dist: %.2fm, orientation error: %.1f° - ENTERING DOCKING",
-                    distance, yaw_error * 180.0 / M_PI);
-                docking_state_ = DockingState::DOCKING;
-
-            } else if (close_enough && !oriented_correctly) {
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                    "Close to target (%.2fm) but orientation %.1f° off - keep navigating",
-                    distance, yaw_error * 180.0 / M_PI);
-
-            } else {
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
-                    "Waiting: %.2fm from target, %.1f° orientation error",
-                    distance, yaw_error * 180.0 / M_PI);
-            }
+            handleIdleState();
             break;
-        }
-        case DockingState::DOCKING: {
-            auto wall_opt = extractWallGeometry();
-            auto cmd = geometry_msgs::msg::Twist();
-
-            if (!wall_opt.has_value()) {
-                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                    "Wall detection failed. Stopping robot.");
-                cmd.linear.x = 0.0;
-                cmd.angular.z = 0.0;
-                cmd_vel_pub_->publish(cmd);
-                break;
-            }
-
-            auto wall = wall_opt.value();
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                "Wall detected - confidence: %.1f%%, inliers: %d, distance: %.3fm",
-                wall.confidence * 100.0, wall.inliers, distance);
-
-            double distance_to_wall = std::abs(wall.c);
-            double error_distance = distance_to_wall - d_target_;
-
-            double wall_normal_angle = std::atan2(wall.b, wall.a);
-            double heading_option1 = normalizeAngle(wall_normal_angle + M_PI);
-            double heading_option2 = normalizeAngle(wall_normal_angle);
-
-            // Choose whichever requires less rotation from 0° (forward in base_link)
-            double e_theta = (std::abs(heading_option1) < std::abs(heading_option2))
-                             ? heading_option1 : heading_option2;
-
-            if (std::abs(error_distance) < distance_tolerance_ && std::abs(e_theta) < angle_tolerance_) {
-                RCLCPP_INFO(this->get_logger(), "DOCKED! Final errors - distance: %.4fm, angle: %.4frad",
-                            error_distance, e_theta);
-                docking_state_ = DockingState::DOCKED;
-                cmd.linear.x = 0.0;
-                cmd.angular.z = 0.0;
-                cmd_vel_pub_->publish(cmd);
-                break;
-            }
-            double linear_vel = 0.0;
-            double angular_vel = 0.0;
-
-            // Three-phase control strategy
-            if (distance_to_wall > final_approach_distance_) {
-                // Phase 1: Normal approach - simultaneous control
-                if (std::abs(e_theta) > angle_tolerance_) {
-                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Phase 1: Rotating to face wall");
-                    angular_vel = k_angular_ * e_theta;
-                } else {
-                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Phase 1: Moving to wall");
-                    linear_vel = k_linear_ * error_distance;
-                    angular_vel = k_angular_ * e_theta * 0.3;  // Reduced speed
-                }
-
-            } else {
-                // Phase 2 & 3: Final approach - sequential control
-                if (std::abs(e_theta) > angle_tolerance_) {
-                    // Rotate in place until aligned
-                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Phase 2: Rotating on the spot");
-                    angular_vel = k_angular_ * e_theta;
-                } else {
-                    // Drive straight forward slowly
-                    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "Phase 2: Inching to wall");
-                    linear_vel = k_linear_ * error_distance * 0.4;  // Reduced speed for precision
-                }
-            }
-
-            // Apply velocity limits
-            linear_vel = std::clamp(linear_vel, -linear_vel_max_, linear_vel_max_);
-            angular_vel = std::clamp(angular_vel, -angular_vel_max_, angular_vel_max_);
-
-            // Safety check: if too close and large error, stop
-            if (distance_to_wall < 0.05 && std::abs(e_theta) > 0.3) {
-                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                    "Too close with poor alignment - stopping");
-            }
-            // Publish command
-            cmd.linear.x = linear_vel;
-            cmd.angular.z = angular_vel;
-            cmd_vel_pub_->publish(cmd);
-
-            // Debug logging
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-                "Docking - dist_err: %.3fm, angle_err: %.3frad, v: %.3f, ω: %.3f, confidence: %.1f%%",
-                error_distance, e_theta, linear_vel, angular_vel, wall.confidence * 100.0);
-
-            break;
-        }
-
-        case DockingState::DOCKED: {
-            // Publish zero velocity once, then do nothing
-            if (!stopped) {
+        case DockingState::DOCKING:
+            // Check docking timeout
+            if ((this->now() - docking_start_time_).seconds() > docking_timeout_s_) {
+                RCLCPP_ERROR(this->get_logger(), "Docking timeout (%.0fs) - FAILED", docking_timeout_s_);
+                docking_state_ = DockingState::FAILED;
                 auto cmd = geometry_msgs::msg::Twist();
                 cmd_vel_pub_->publish(cmd);
-                stopped = true;
-                RCLCPP_INFO(this->get_logger(), "Docking complete!");
+                break;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(scan_mutex_);
+                if (!latest_scan_ ||
+                    (this->now() - latest_scan_->header.stamp).seconds() > 0.5) {
+                    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 500, "Scan data stale or missing - stopping robot");
+                    auto cmd = geometry_msgs::msg::Twist();
+                    cmd_vel_pub_->publish(cmd);
+                    break;
+                }
+            }
+            handleDockingState();
+            break;
+
+        case DockingState::DOCKED:
+            handleDockedState();
+            break;
+
+        case DockingState::FAILED:
+            handleFailedState();
+            break;
+    }
+}
+
+void DockingNode::handleIdleState() {
+    double current_yaw = getRobotYaw(current_pose_);
+    double yaw_error = std::abs(normalizeAngle(current_yaw - target_theta_));
+
+    bool close_enough = (distance_to_target_ < approach_distance_threshold_m_);
+    bool oriented_correctly = (yaw_error < approach_orientation_tolerance_m_);
+
+    if (close_enough && oriented_correctly) {
+        RCLCPP_INFO(this->get_logger(),
+                    "Ready to dock - dist: %.2fm, orientation error: %.1f° - ENTERING DOCKING",
+                    distance_to_target_, yaw_error * 180.0 / M_PI);
+        docking_state_ = DockingState::DOCKING;
+        docking_phase_ = DockingPhase::APPROACH;
+        docking_start_time_ = this->now();
+        consecutive_wall_failures_ = 0;
+
+    } else if (close_enough && !oriented_correctly) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                            "Close to target (%.2fm) but orientation %.1f° off - keep navigating",
+                            distance_to_target_, yaw_error * 180.0 / M_PI);
+
+    } else {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                            "Waiting: %.2fm from target, %.1f° orientation error",
+                            distance_to_target_, yaw_error * 180.0 / M_PI);
+    }
+}
+
+void DockingNode::handleDockingState() {
+    auto wall_opt = extractWallGeometry();
+    auto cmd = geometry_msgs::msg::Twist();
+
+    if (!wall_opt.has_value()) {
+        consecutive_wall_failures_++;
+        if (consecutive_wall_failures_ >= max_consecutive_failures_) {
+            RCLCPP_ERROR(this->get_logger(),
+                        "Wall detection failed %d consecutive times - FAILED",
+                        consecutive_wall_failures_);
+            docking_state_ = DockingState::FAILED;
+            cmd_vel_pub_->publish(cmd);
+            return;
+        }
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "Wall detection failed. Stopping robot.");
+        auto cmd = geometry_msgs::msg::Twist();
+        cmd_vel_pub_->publish(cmd);
+        return;
+    }
+    consecutive_wall_failures_ = 0;
+
+    auto wall = wall_opt.value();
+    double distance_to_wall = std::abs(wall.c);
+    double error_distance = distance_to_wall - d_target_;
+
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                        "Wall detected - confidence: %.1f%%, inliers: %d, wall distance: %.3fm",
+                        wall.confidence * 100.0, wall.inliers, distance_to_wall);
+
+    double wall_normal_angle = std::atan2(wall.b, wall.a);
+    double heading_option1 = normalizeAngle(wall_normal_angle + M_PI);
+    double heading_option2 = normalizeAngle(wall_normal_angle);
+
+    // Pick the one with positive x-component (cos > 0 means pointing forward)
+    double e_theta = (std::cos(heading_option1) > std::cos(heading_option2))
+         ? heading_option1 : heading_option2;
+
+    if (wall.confidence < 0.6) {
+        auto cmd = geometry_msgs::msg::Twist();
+        cmd_vel_pub_->publish(cmd);
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                            "Wall confidence low, stopping robot.");
+        return;
+    }
+    if (std::abs(error_distance) < distance_tolerance_m_ &&
+        std::abs(e_theta) < angle_tolerance_rad_) {
+        auto cmd = geometry_msgs::msg::Twist();
+        cmd_vel_pub_->publish(cmd);
+        if (wall.confidence > 0.8) {
+            dock_confirm_count_++;
+        }
+        // RCLCPP_INFO(this->get_logger(), "Dock confirm count: %d",
+        //            dock_confirm_count_);
+        if (dock_confirm_count_ >= dock_confirm_required_) {
+            RCLCPP_INFO(this->get_logger(),
+                        "DOCKED! Final information - distance_to_wall: %.4fm, distance_error: %.4fm, angle: %.4frad, dock time: %.1fs",
+                        distance_to_wall, error_distance, e_theta, (this->now() - docking_start_time_).seconds());
+            docking_state_ = DockingState::DOCKED;
+        }
+        return;
+    }
+    dock_confirm_count_ = 0;
+
+    double linear_vel  = 0.0;
+    double angular_vel = 0.0;
+
+    // Three-phase control strategy
+    if ( distance_to_wall <= final_approach_distance_) {
+        docking_phase_ = DockingPhase::FINAL;
+    }
+    switch (docking_phase_) {
+        case DockingPhase::APPROACH:
+            // Phase 1: Normal approach - simultaneous control
+            if (std::abs(e_theta) > angle_tolerance_rad_) {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                        "Phase 1: Rotating to face wall");
+                angular_vel = k_angular_ * e_theta;
+            } else {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                        "Phase 1: Moving to wall");
+                linear_vel = k_linear_ * error_distance;
+                angular_vel = k_angular_ * e_theta * 0.4; // Reduced speed
             }
             break;
-        }
-
-        case DockingState::FAILED: {
-            RCLCPP_INFO(this->get_logger(), "Docking failed");
+        case DockingPhase::FINAL:
+            // Phase 2: Final approach - sequential control
+            if (std::abs(e_theta) > angle_tolerance_rad_) {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                        "Phase 2: Rotating on the spot");
+                angular_vel = k_angular_ * e_theta * 0.3;
+            } else {
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 3000,
+                        "Phase 2: Inching to wall");
+                linear_vel = k_linear_ * error_distance; // Reduced speed for precision
+            }
             break;
-        }
+    }
+
+    // Apply velocity limits
+    linear_vel = std::clamp(linear_vel, -linear_vel_max_m_per_s_, linear_vel_max_m_per_s_);
+    angular_vel = std::clamp(angular_vel, -angular_vel_max_m_per_s_, angular_vel_max_m_per_s_);
+
+    // Safety check: if too close and large error, stop
+    if (distance_to_wall < 0.05 && std::abs(e_theta) > 0.1) {
+        linear_vel  = 0.0;
+        angular_vel = 0.0;
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "Too close with poor alignment - stopping");
+    }
+    // Publish command
+    cmd.linear.x  = linear_vel;
+    cmd.angular.z = angular_vel;
+    cmd_vel_pub_->publish(cmd);
+
+    // Debug logging
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+        "Docking - dist_err: %.3fm, angle_err: %.3frad, v: %.3f, ω: %.3f, confidence: %.1f%%",
+        error_distance, e_theta, linear_vel, angular_vel, wall.confidence * 100.0);
+
+}
+
+void DockingNode::handleDockedState() {
+    // Publish zero velocity once, then do nothing
+    if (!stopped_) {
+        auto cmd = geometry_msgs::msg::Twist();
+        cmd_vel_pub_->publish(cmd);
+        stopped_ = true;
+        RCLCPP_INFO(this->get_logger(), "Docking complete!");
+    }
+}
+
+void DockingNode::handleFailedState() {
+   if (!stopped_) {
+        auto cmd = geometry_msgs::msg::Twist();
+        cmd_vel_pub_->publish(cmd);
+        stopped_ = true;
+        RCLCPP_ERROR(this->get_logger(), "Docking FAILED - robot stopped");
     }
 }
 
@@ -229,25 +303,6 @@ std::optional<geometry_msgs::msg::Pose> DockingNode::getRobotPose() {
         pose.position.y = transform.transform.translation.y;
         pose.position.z = transform.transform.translation.z;
         pose.orientation = transform.transform.rotation;
-
-        // Inject pose noise to force reliance on LiDAR geometry
-        if (enable_pose_noise_) {
-            pose.position.x += pos_noise_dist_(noise_gen_);
-            pose.position.y += pos_noise_dist_(noise_gen_);
-
-            double siny = 2.0 * (pose.orientation.w * pose.orientation.z +
-                                  pose.orientation.x * pose.orientation.y);
-            double cosy = 1.0 - 2.0 * (pose.orientation.y * pose.orientation.y +
-                                        pose.orientation.z * pose.orientation.z);
-            double yaw = std::atan2(siny, cosy) + yaw_noise_dist_(noise_gen_);
-
-            tf2::Quaternion q;
-            q.setRPY(0.0, 0.0, yaw);
-            pose.orientation.x = q.x();
-            pose.orientation.y = q.y();
-            pose.orientation.z = q.z();
-            pose.orientation.w = q.w();
-        }
 
         return pose;
     } catch (const tf2::TransformException& ex) {
@@ -270,7 +325,6 @@ std::vector<Eigen::Vector2d> DockingNode::scanToPoints(
         return points;
     }
 
-    // Filter front-facing points (±60 degrees)
     double front_angle_range = M_PI / 3.0;  // 60 degrees
 
     for (size_t i = 0; i < scan->ranges.size(); ++i) {
@@ -362,8 +416,8 @@ std::optional<DockingNode::LineModel> DockingNode::extractWallGeometry() {
         // Count inliers
         int inlier_count = 0;
         for (const auto& pt : points) {
-            double distance = std::abs(a * pt.x() + b * pt.y() + c);
-            if (distance < ransac_inlier_threshold_) {
+            double distance_to_target_ = std::abs(a * pt.x() + b * pt.y() + c);
+            if (distance_to_target_ < ransac_inlier_threshold_m_) {
                 inlier_count++;
             }
         }

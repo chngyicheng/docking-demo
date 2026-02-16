@@ -11,8 +11,8 @@ public:
 
 private:
     void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
-    bool shouldCorrupt();
     bool inDropoutWindow();
+    bool inCorruptionWindow();
 
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::LaserScan>::SharedPtr scan_sub_;
@@ -33,6 +33,14 @@ private:
     bool currently_dropping_;
     double dropout_cycle_duration_;
     double dropout_burst_duration_;
+    std::uniform_real_distribution<double> dropout_cycle_dist_;
+
+    // Timing for corruption bursts
+    rclcpp::Time last_corruption_toggle_;
+    bool currently_corrupting_;
+    double corruption_cycle_duration_;
+    double corruption_burst_duration_;
+    std::uniform_real_distribution<double> corruption_cycle_dist_;
 };
 
 }  // namespace docking_demo

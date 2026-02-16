@@ -8,7 +8,12 @@ DisturbanceNode::DisturbanceNode()
       uniform_dist_(0.0, 1.0),
       currently_dropping_(false),
       dropout_cycle_duration_(2.0),   // 2 second cycles
-      dropout_burst_duration_(0.5)    // 0.5s dropout bursts
+      dropout_burst_duration_(0.6),    // 0.6s dropout bursts
+      dropout_cycle_dist_(1.5, 4.0),
+      currently_corrupting_(false),
+      corruption_cycle_duration_(3.0),
+      corruption_burst_duration_(1.0),
+      corruption_cycle_dist_(2.0, 5.0)
 {
     this->declare_parameter("enable_scan_dropout", false);
     this->declare_parameter("enable_scan_corruption", false);
@@ -24,6 +29,7 @@ DisturbanceNode::DisturbanceNode()
     scan_pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("/scan_disturbed", 10);
 
     last_dropout_toggle_ = this->now();
+    last_corruption_toggle_ = this->now();
 
     RCLCPP_INFO(this->get_logger(), "Disturbance node initialized");
     RCLCPP_INFO(this->get_logger(), "  Scan dropout: %s", enable_scan_dropout_ ? "enabled" : "disabled");
@@ -44,16 +50,34 @@ bool DisturbanceNode::inDropoutWindow() {
         if (elapsed > dropout_cycle_duration_) {
             currently_dropping_ = true;
             last_dropout_toggle_ = this->now();
-            RCLCPP_WARN(this->get_logger(), "Dropout burst started - dropping scans for %.1fs",
-                        dropout_burst_duration_);
+            dropout_cycle_duration_ = dropout_cycle_dist_(gen_);
+            RCLCPP_WARN(this->get_logger(), "Dropout burst started - dropping scans for %.1fs. Next dropout is %.1fs later.",
+                        dropout_burst_duration_, dropout_cycle_duration_);
         }
         return false;
     }
 }
 
-bool DisturbanceNode::shouldCorrupt() {
-    // Corrupt 20% of scans randomly
-    return uniform_dist_(gen_) < 0.2;
+bool DisturbanceNode::inCorruptionWindow() {
+    auto elapsed = (this->now() - last_corruption_toggle_).seconds();
+
+    if (currently_corrupting_) {
+        if (elapsed > corruption_burst_duration_) {
+            currently_corrupting_ = false;
+            last_corruption_toggle_ = this->now();
+            RCLCPP_INFO(this->get_logger(), "Corruption burst ended");
+        }
+        return true;
+    } else {
+        if (elapsed > corruption_cycle_duration_) {
+            currently_corrupting_ = true;
+            last_corruption_toggle_ = this->now();
+            corruption_cycle_duration_ = corruption_cycle_dist_(gen_);
+            RCLCPP_WARN(this->get_logger(), "Corruption burst started for %.1fs. Next in %.1fs.",
+                        corruption_burst_duration_, corruption_cycle_duration_);
+        }
+        return false;
+    }
 }
 
 void DisturbanceNode::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg) {
@@ -65,10 +89,10 @@ void DisturbanceNode::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr 
     auto disturbed_scan = std::make_shared<sensor_msgs::msg::LaserScan>(*msg);
 
     // Handle corruption - corrupt front sector (±30°) which overlaps with docking detection window
-    if (enable_scan_corruption_ && shouldCorrupt()) {
+    if (enable_scan_corruption_ && inCorruptionWindow()) {
         // TurtleBot3 LDS-01: 360 points, angle_min ≈ 0, angle_increment ≈ 0.0175 rad
         // Front is at index 0. Corrupt ±30° = indices 0-17 and 343-359
-        int sector_half = static_cast<int>((M_PI / 6.0) / disturbed_scan->angle_increment);
+        int sector_half = static_cast<int>((5 * M_PI / 18.0) / disturbed_scan->angle_increment);
         int total_pts = static_cast<int>(disturbed_scan->ranges.size());
 
         // Corrupt 0 to +30°
@@ -81,7 +105,7 @@ void DisturbanceNode::scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr 
         }
 
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-            "Scan corruption injected - front sector [±30°] set to infinity");
+            "Scan corruption injected - front sector [±50°] set to infinity");
     }
 
     scan_pub_->publish(*disturbed_scan);

@@ -26,6 +26,10 @@ private:
         DOCKED,
         FAILED
     };
+    enum class DockingPhase {
+        APPROACH,
+        FINAL
+    };
     struct LineModel {
         double a, b, c;  // ax + by + c = 0, normalized
         int inliers;
@@ -35,6 +39,10 @@ private:
     void scanCallback(const sensor_msgs::msg::LaserScan::SharedPtr msg);
     void sendNavigationGoal();
     void controlLoop();
+    void handleIdleState();
+    void handleDockingState();
+    void handleDockedState();
+    void handleFailedState();
     double normalizeAngle(double angle);
     double getRobotYaw(const geometry_msgs::msg::Pose& pose);
     std::vector<Eigen::Vector2d> scanToPoints(const sensor_msgs::msg::LaserScan::SharedPtr& scan);
@@ -60,32 +68,44 @@ private:
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
-    bool stopped = false;
+    bool stopped_ = false;
     bool goal_sent_ = false;
     int ransac_iterations_ = 50;
     double target_x_;
     double target_y_;
     double target_theta_;
-    double approach_distance_threshold_;
-    double docking_distance_threshold_;
-    double docking_angle_threshold_;
+    double distance_to_target_;
+    double approach_distance_threshold_m_;
+    double docking_distance_threshold_m_;
+    double docking_angle_threshold_rad_;
     double final_approach_distance_;
-    double ransac_inlier_threshold_ = 0.05;  // 5cm
+    double ransac_inlier_threshold_m_ = 0.05;  // 5cm
     double min_inlier_ratio_ = 0.3;  // 30% of points
+    rclcpp::Time last_goal_time_;
+    geometry_msgs::msg::Pose current_pose_;
+    DockingPhase docking_phase_ = DockingPhase::APPROACH;
 
     // Control gains
     double k_linear_ = 0.3;
     double k_angular_ = 1.5;
-    double d_target_ = 0.05;  // Target distance from wall
+    double d_target_ = 0.1;  // Target distance from wall
 
     // Velocity limits
-    double linear_vel_max_ = 0.15;
-    double angular_vel_max_ = 0.5;
+    double linear_vel_max_m_per_s_ = 0.15;
+    double angular_vel_max_m_per_s_ = 0.5;
 
     // Dead zone thresholds
-    double distance_tolerance_ = 0.07;  // 10cm
-    double angle_tolerance_ = 0.1;     // ~6 degrees
-    double approach_orientation_tolerance_ = 0.34;
+    double distance_tolerance_m_ = 0.05;  // 5cm
+    double angle_tolerance_rad_ = 0.09;     // ~5 degrees
+    double approach_orientation_tolerance_m_ = 0.34;
+    int dock_confirm_count_ = 0;
+    int dock_confirm_required_ = 5;
+
+    // Failure detection
+    rclcpp::Time docking_start_time_;
+    int consecutive_wall_failures_ = 0;
+    int max_consecutive_failures_ = 25;
+    double docking_timeout_s_ = 30.0;
 
     // Pose noise injection (applied in getRobotPose)
     bool enable_pose_noise_ = false;

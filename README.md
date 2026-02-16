@@ -38,13 +38,12 @@ ros2 launch docking_demo docking_demo.launch.py \
 ```
 
 Available disturbances:
-- `pose_noise` - Adds ±10cm noise to odometry-based pose estimate
-- `scan_dropout` - Randomly drops 30% of laser scans
+- `scan_dropout` - Randomly drops 50% of laser scans
 - `scan_corruption` - Sets random sectors to infinity
 
 ## Docking Target
 
-Corner at `(1.5, 2.0)` in turtlebot3_world map (inner wall corner near center).
+Side at `(2.0, -1.1)` in turtlebot3_world map (right wall).
 
 ## Documentation
 

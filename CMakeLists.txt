@@ -57,7 +57,7 @@ install(TARGETS docking_node disturbance_node
 install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME})
 
-install(PROGRAMS scripts/run_demo.sh
+install(PROGRAMS scripts/run_normal_demo.sh scripts/run_demo_w_disturbance.sh
   DESTINATION lib/${PROJECT_NAME})
 
 ament_package()
